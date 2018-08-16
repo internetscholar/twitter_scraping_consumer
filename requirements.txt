@@ -1,0 +1,4 @@
+selenium>=3.11.0
+pendulum>=1.4.4
+psycopg2-binary>=2.7.4
+boto3>=1.6.22
