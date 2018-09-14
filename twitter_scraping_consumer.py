@@ -45,7 +45,7 @@ def main():
     aws_session = boto3.Session(
         aws_access_key_id=aws_credential['aws_access_key_id'],
         aws_secret_access_key=aws_credential['aws_secret_access_key'],
-        region_name=aws_credential['region_name']
+        region_name=config['aws']['region_queues']
     )
     sqs = aws_session.resource('sqs')
     subqueries_queue = sqs.get_queue_by_name(QueueName='twitter_scraping')
@@ -119,7 +119,11 @@ def main():
                             html_page = driver.page_source
                             tweets = find_tweets(html_page)
 
+                            # todo: change default tolerance in seconds and subquery interval on create_database.sql
                             if len(tweets) == 0:
+                                # todo: this is not normal... I believe it happens when twitter blocks
+                                # the script... two alternatives: kill this server and start a new one OR
+                                # log the HTML response from the server OR both. Maybe we could just raise an exception?
                                 subquery['until'] = subquery['until'] - subquery['tolerance_in_seconds']
                             else:
                                 data_text = ','.join(
@@ -171,7 +175,7 @@ def main():
         ec2 = aws_session.resource('ec2')
         # https://boto3.readthedocs.io/en/latest/reference/services/ec2.html#EC2.ServiceResource.create_instances
         ec2.create_instances(ImageId=aws_ami['ami_id'],
-                             InstanceType='t2.nano',
+                             InstanceType=aws_ami['instance_type'],
                              KeyName=aws_ami['key_pair_name'],
                              InstanceInitiatedShutdownBehavior='terminate',
                              MaxCount=1,
