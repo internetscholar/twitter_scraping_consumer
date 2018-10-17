@@ -11,6 +11,10 @@ import psycopg2
 from psycopg2 import extras
 from selenium import webdriver
 from selenium.webdriver.firefox.options import Options
+import logging
+
+
+CURRENT_MODULE = "twitter_scraping_consumer"
 
 
 def find_tweets(html_source):
@@ -29,6 +33,47 @@ def find_tweets(html_source):
     return tweets
 
 
+def create_new_ec2_instance(aws_access_key_id, aws_secret_access_key):
+    # Retrieve info on current instance. Based on:
+    # https://hackernoon.com/do-as-i-say-not-as-i-do-get-your-ec2-instance-
+    # name-without-breaking-your-infrastructure-1da4a0963af0
+    try:
+        r = requests.get("http://169.254.169.254/latest/dynamic/instance-identity/document")
+    except requests.exceptions.ConnectionError:
+        logging.info('You are not on AWS. New instance will not be created')
+    else:
+        response_json = r.json()
+        region = response_json.get('region')
+        instance_id = response_json.get('instanceId')
+        instance_type = response_json.get('instanceType')
+        image_id = response_json.get('imageId')
+        aws_crisis_session = boto3.Session(
+            aws_access_key_id=aws_access_key_id,
+            aws_secret_access_key=aws_secret_access_key,
+            region_name=region
+        )
+
+        # Retrieve tags for current_instance
+        ec2 = aws_crisis_session.resource('ec2')
+        instance = ec2.Instance(instance_id)
+        tags = instance.tags or []
+        generations = [tag.get('Value') for tag in tags if tag.get('Key') == 'generation']
+        generation = str(int(generations[0]) + 1 if generations else 2)
+
+        # https://boto3.readthedocs.io/en/latest/reference/services/ec2.html#EC2.ServiceResource.create_instances
+        ec2.create_instances(ImageId=image_id,
+                             InstanceType=instance_type,
+                             InstanceInitiatedShutdownBehavior='terminate',
+                             MaxCount=1,
+                             MinCount=1,
+                             TagSpecifications=[{'ResourceType': 'instance',
+                                                 'Tags': [{"Key": "module",
+                                                           "Value": CURRENT_MODULE},
+                                                          {"Key": "generation",
+                                                           "Value": generation}
+                                                          ]}])
+
+
 def main():
     # Connect to Postgres server.
     config = configparser.ConfigParser()
@@ -45,15 +90,10 @@ def main():
     aws_session = boto3.Session(
         aws_access_key_id=aws_credential['aws_access_key_id'],
         aws_secret_access_key=aws_credential['aws_secret_access_key'],
-        region_name=config['aws']['region_queues']
+        region_name=aws_credential['default_region']
     )
     sqs = aws_session.resource('sqs')
     subqueries_queue = sqs.get_queue_by_name(QueueName='twitter_scraping')
-    # Retrieve AWS AMI.
-    c.execute("select * from aws_ami "
-              "where ami_name = 'twitter_scraping_consumer' "
-              "and region_name = '{}'".format(aws_credential['region_name']))
-    aws_ami = c.fetchone()
 
     subquery = None
     ip = None
@@ -119,7 +159,6 @@ def main():
                             html_page = driver.page_source
                             tweets = find_tweets(html_page)
 
-                            # todo: change default tolerance in seconds and subquery interval on create_database.sql
                             if len(tweets) == 0:
                                 # todo: this is not normal... I believe it happens when twitter blocks
                                 # the script... two alternatives: kill this server and start a new one OR
@@ -172,14 +211,7 @@ def main():
         if incomplete_transaction:
             subqueries_queue.send_message(MessageBody=json.dumps(subquery))
         # start a new server
-        ec2 = aws_session.resource('ec2')
-        # https://boto3.readthedocs.io/en/latest/reference/services/ec2.html#EC2.ServiceResource.create_instances
-        ec2.create_instances(ImageId=aws_ami['ami_id'],
-                             InstanceType=aws_ami['instance_type'],
-                             KeyName=aws_ami['key_pair_name'],
-                             InstanceInitiatedShutdownBehavior='terminate',
-                             MaxCount=1,
-                             MinCount=1)
+        create_new_ec2_instance(aws_credential['aws_access_key_id'], aws_credential['aws_secret_access_key'])
         raise
     finally:
         conn.close()
